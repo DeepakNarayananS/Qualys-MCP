@@ -1,0 +1,13 @@
+# Virtual environments
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Secrets and local config
+.env
+mcp.json
+*.log

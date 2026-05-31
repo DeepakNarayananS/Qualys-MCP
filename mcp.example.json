@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "qualys-mcp": {
+      "command": "python",
+      "args": ["-m", "qualys_mcp"],
+      "cwd": "C:\\path\\to\\Mr.D_Qualys_MCP",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "QUALYS_USERNAME": "your-qualys-user",
+        "QUALYS_PASSWORD": "your-qualys-password",
+        "QUALYS_POD": "US2",
+        "QUALYS_SSL_VERIFY": "true"
+      },
+      "disabled": false,
+      "autoApprove": [
+        "check_connection",
+        "security_overview",
+        "investigate",
+        "assess_risk",
+        "plan_remediation",
+        "list_assets"
+      ]
+    }
+  }
+}
