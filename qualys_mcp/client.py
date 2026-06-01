@@ -44,6 +44,8 @@ POD_MAP = {
 SESSION_ENDPOINT = "/api/2.0/fo/session/"
 SCAN_ENDPOINT = "/api/2.0/fo/scan/"
 REPORT_ENDPOINT = "/api/2.0/fo/report/"
+QPS_HOSTASSET = "/qps/rest/2.0/search/am/hostasset"
+QPS_HOSTASSET_COUNT = "/qps/rest/2.0/count/am/hostasset"
 RETRY_STATUS = (429, 502, 503, 504)
 TOKEN_TTL_SECONDS = 12600  # gateway JWT lives ~4h; refresh a little early
 
@@ -256,6 +258,42 @@ class QualysClient:
         raise QualysError(last_error or "request failed")
 
     # ------------------------------------------------------------------
+    # QPS request (Asset Management — header credentials)
+    # ------------------------------------------------------------------
+
+    def qps_request(self, path: str, xml_body: str = "") -> dict:
+        """POST to a QPS Asset Management endpoint.
+
+        QPS uses lightweight header credentials (lowercase ``user``/``password``),
+        which work even when an account has HTTP Basic auth disabled for the API.
+        Returns the parsed ``ServiceResponse`` dict.
+        """
+        self._check_config()
+        body = xml_body or "<ServiceRequest></ServiceRequest>"
+        headers = {
+            "X-Requested-With": "qualys-mcp",
+            "Content-Type": "application/xml",
+            "Accept": "application/json",
+            "user": self.config.username,
+            "password": self.config.password,
+        }
+
+        def send():
+            return self._http.post(f"{self.config.base_url}{path}", content=body,
+                                   headers=headers, timeout=self.config.timeout)
+
+        response = self._retry(send, on_401=lambda: None)
+        try:
+            data = response.json().get("ServiceResponse", {})
+        except json.JSONDecodeError:
+            raise QualysError(f"QPS returned non-JSON: {response.text[:200]}")
+        if data.get("responseCode") not in (None, "SUCCESS"):
+            raise QualysError(
+                f"QPS {data.get('responseCode')}: "
+                f"{data.get('responseErrorDetails', {}).get('errorMessage', '')}")
+        return data
+
+    # ------------------------------------------------------------------
     # FO convenience methods
     # ------------------------------------------------------------------
 
@@ -277,9 +315,15 @@ class QualysClient:
             params["scan_ref"] = scan_ref
         return parse_scan_list(self.fo_request("GET", SCAN_ENDPOINT, params=params))
 
-    def list_host_assets(self, limit: int = 100) -> list[dict]:
-        params = {"action": "list", "truncation_limit": str(limit)}
-        return parse_host_list(self.fo_request("GET", "/api/2.0/fo/asset/host/", params=params))
+    def list_host_assets(self, limit: int = 100, name: str = "") -> list[dict]:
+        """List host assets via the QPS Asset Management API (works with header
+        credentials, including Cloud Agent assets)."""
+        filt = (f'<filters><Criteria field="name" operator="CONTAINS">{name}'
+                f'</Criteria></filters>' if name else "")
+        xml = (f"<ServiceRequest><preferences><limitResults>{limit}</limitResults>"
+               f"</preferences>{filt}</ServiceRequest>")
+        data = self.qps_request(QPS_HOSTASSET, xml)
+        return parse_hostassets(data)
 
     def list_scanners(self) -> list[dict]:
         params = {"action": "list", "output_mode": "full"}
@@ -302,16 +346,19 @@ class QualysClient:
 
     def host_detections(self, severity: int = 0, qids: str = "", ips: str = "",
                         limit: int = 200) -> list[dict]:
-        params: dict[str, str] = {"action": "list", "truncation_limit": str(limit),
-                                  "show_results": "0"}
+        """List per-host vulnerability detections via the QPS Asset Management
+        API (``hostinstancevuln``), which works with header credentials."""
+        criteria = []
         if severity:
-            params["severities"] = str(severity)
+            criteria.append(f'<Criteria field="severity" operator="EQUALS">{severity}</Criteria>')
         if qids:
-            params["qids"] = qids
-        if ips:
-            params["ips"] = ips
-        return parse_detections(self.fo_request("GET", "/api/2.0/fo/asset/host/vm/detection/",
-                                                params=params))
+            first_qid = qids.split(",")[0].strip()
+            criteria.append(f'<Criteria field="qid" operator="EQUALS">{first_qid}</Criteria>')
+        filt = f"<filters>{''.join(criteria)}</filters>" if criteria else ""
+        xml = (f"<ServiceRequest><preferences><limitResults>{limit}</limitResults>"
+               f"</preferences>{filt}</ServiceRequest>")
+        data = self.qps_request("/qps/rest/2.0/search/am/hostinstancevuln", xml)
+        return parse_hostinstancevuln(data)
 
     def launch_scan(self, title: str, ip: str, option_profile_id: str, iscanner_name: str = "") -> dict:
         data = {"action": "launch", "scan_title": title, "ip": ip, "option_id": option_profile_id}
@@ -556,3 +603,48 @@ def parse_template_list(text: str) -> list[dict]:
             "global": t.findtext("GLOBAL", ""),
         })
     return templates
+
+
+def parse_hostassets(service_response: dict) -> list[dict]:
+    """Parse a QPS Asset Management ServiceResponse into a flat host list."""
+    hosts = []
+    for item in service_response.get("data", []):
+        ha = item.get("HostAsset", {})
+        agent = ha.get("agentInfo", {}) or {}
+        hosts.append({
+            "id": ha.get("id"),
+            "name": ha.get("name", ""),
+            "ip": ha.get("address", ""),
+            "dns": ha.get("dnsHostName", "") or ha.get("fqdn", ""),
+            "netbios": ha.get("netbiosName", ""),
+            "os": ha.get("os", ""),
+            "tracking": ha.get("trackingMethod", ""),
+            "qweb_host_id": ha.get("qwebHostId"),
+            "agent_status": agent.get("status", ""),
+            "last_checkin": agent.get("lastCheckedIn", ""),
+            "last_system_boot": ha.get("lastSystemBoot", ""),
+        })
+    return hosts
+
+
+def parse_hostinstancevuln(service_response: dict) -> list[dict]:
+    """Parse a QPS HostInstanceVuln ServiceResponse into a flat detection list.
+
+    Field names follow the QPS Asset Management schema; missing keys default to
+    empty so the parser is resilient across pod/schema variations.
+    """
+    dets = []
+    for item in service_response.get("data", []):
+        v = item.get("HostInstanceVuln", item.get("HostAssetVuln", {})) or {}
+        dets.append({
+            "qid": str(v.get("qid", "")),
+            "severity": str(v.get("severity", "")),
+            "type": v.get("type", ""),
+            "status": v.get("status", ""),
+            "host_id": v.get("hostId") or v.get("assetId"),
+            "first_found": v.get("firstFound", ""),
+            "last_found": v.get("lastFound", ""),
+            "port": v.get("port", ""),
+            "protocol": v.get("protocol", ""),
+        })
+    return dets

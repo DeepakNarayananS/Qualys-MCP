@@ -203,10 +203,14 @@ def investigate(target: str, limit: int = 25) -> dict:
             limit=limit),
         [])
     qids = ",".join(v["qid"] for v in kb if v.get("qid")) or ("" if is_cve else target)
-    hosts, hosts_err = _safe(
+    dets, dets_err = _safe(
         lambda: client.host_detections(qids=qids, limit=limit) if qids else [], [])
-    affected = [{"ip": h["ip"], "dns": h["dns"], "os": h["os"],
-                 "detections": len(h["detections"])} for h in hosts if h["detections"]]
+    # Group detections by host_id
+    by_host = {}
+    for d in dets:
+        hid = d.get("host_id", "unknown")
+        by_host.setdefault(hid, []).append(d)
+    affected = [{"host_id": hid, "detections": len(ds)} for hid, ds in by_host.items()]
     return {
         "status": "success",
         "target": target,
@@ -214,7 +218,7 @@ def investigate(target: str, limit: int = 25) -> dict:
         "knowledgebase_error": kb_err,
         "affected_hosts": affected,
         "affected_count": len(affected),
-        "hosts_error": hosts_err,
+        "detections_error": dets_err,
     }
 
 
@@ -244,13 +248,15 @@ def assess_risk(scope: str = "all") -> dict:
 
 
 def _risk_vulns(client: QualysClient, result: dict) -> None:
-    hosts, err = _safe(lambda: client.host_detections(limit=1000), [])
+    dets, err = _safe(lambda: client.host_detections(limit=1000), [])
     sev = Counter()
-    for h in hosts:
-        for d in h["detections"]:
-            sev[_SEVERITY_NAME.get(d.get("severity", ""), "Unknown")] += 1
+    hosts_with_findings = set()
+    for d in dets:
+        sev[_SEVERITY_NAME.get(d.get("severity", ""), "Unknown")] += 1
+        if d.get("host_id"):
+            hosts_with_findings.add(d["host_id"])
     result["vulnerabilities_by_severity"] = dict(sev)
-    result["hosts_with_findings"] = sum(1 for h in hosts if h["detections"])
+    result["hosts_with_findings"] = len(hosts_with_findings)
     if err:
         result["vulnerabilities_error"] = err
 

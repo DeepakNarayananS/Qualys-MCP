@@ -172,6 +172,11 @@ both auth paths green, followed by the tool list:
 
 ![check_connection showing a healthy Qualys MCP connection and the tool list](images/qualys-mcp-connection-healthy.png)
 
+Once connected, you can query your asset inventory. Here's an example showing
+a Cloud Agent asset with detailed statistics and key observations:
+
+![Qualys Asset Inventory showing dnsoc asset with agent status and recommendations](images/Qualys-mcp-1.png)
+
 Notes:
 - `disabled` and `autoApprove` are Kiro-only keys.
 - If `python` isn't the right command on that machine, use `py` or the full path to `python.exe`.
@@ -208,6 +213,9 @@ Using the Qualys MCP, run check_connection. Show me the connection status
 (FO and Gateway), and the full list of available tools in the aligned table.
 ```
 
+This will show you the connection health and available tools as shown in the
+first screenshot above.
+
 **2. Live VMDR assessment of a Cloud Agent host (risk-focused summary)**
 
 Point it at a host enrolled via the Qualys Cloud Agent (replace the name/IP with
@@ -235,6 +243,10 @@ B) WHERE TO FOCUS — don't just repeat the list. For the notable findings, asse
    issues that genuinely need fixing first and why, mapped to the missing patches
    that remediate them. Keep it short and decision-oriented — fix-now vs. can-wait.
 ```
+
+The second prompt produces a comprehensive asset inventory analysis like the one
+shown in the screenshot above, including asset details, statistics, and actionable
+recommendations.
 
 > A freshly enrolled Cloud Agent appears in `list_assets` quickly, but Qualys
 > needs time after the first check-in to finish its initial assessment — so the
